@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0b0f14">
+<title>Desk AI</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0b0f14;
+    --panel: #151b23;
+    --text: #e8edf2;
+    --muted: #8b97a5;
+    --idle: #2b3a4a;
+    --listen: #1f9d6b;
+    --think: #d9a21b;
+    --speak: #3b82f6;
+    --err: #e5534b;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 16px;
+    gap: 14px;
+    overflow-y: auto;
+  }
+  h1 { font-size: 18px; font-weight: 600; margin: 4px 0 0; color: var(--muted); }
+  #orbWrap { flex: 1; display: flex; align-items: center; justify-content: center; width: 100%; min-height: 220px; }
+  #orb {
+    width: min(62vw, 260px);
+    height: min(62vw, 260px);
+    border-radius: 50%;
+    border: none;
+    background: var(--idle);
+    color: var(--text);
+    font-size: 20px;
+    font-weight: 600;
+    box-shadow: 0 0 0 0 rgba(255,255,255,0);
+    transition: background .25s;
+    padding: 12px;
+  }
+  #orb.listen { background: var(--listen); animation: pulse 1.6s infinite; }
+  #orb.think  { background: var(--think); animation: pulse 0.9s infinite; }
+  #orb.speak  { background: var(--speak); animation: pulse 1.2s infinite; }
+  #orb.err    { background: var(--err); }
+  @keyframes pulse {
+    0%   { box-shadow: 0 0 0 0 rgba(255,255,255,.25); }
+    70%  { box-shadow: 0 0 0 28px rgba(255,255,255,0); }
+    100% { box-shadow: 0 0 0 0 rgba(255,255,255,0); }
+  }
+  #status { font-size: 17px; text-align: center; min-height: 24px; }
+  #log {
+    width: 100%; max-width: 520px; background: var(--panel); border-radius: 12px;
+    padding: 12px 14px; font-size: 15px; line-height: 1.45; min-height: 64px;
+  }
+  #log .you { color: var(--muted); }
+  #log div + div { margin-top: 6px; }
+  .row { display: flex; gap: 10px; width: 100%; max-width: 520px; }
+  .row button {
+    flex: 1; padding: 12px; border-radius: 10px; border: 1px solid #2b3744;
+    background: var(--panel); color: var(--text); font-size: 15px;
+  }
+  details { width: 100%; max-width: 520px; background: var(--panel); border-radius: 12px; padding: 10px 14px; }
+  summary { cursor: pointer; color: var(--muted); font-size: 15px; }
+  label { display: block; margin-top: 12px; font-size: 13px; color: var(--muted); }
+  input[type=text], input[type=password], select {
+    width: 100%; margin-top: 4px; padding: 10px; border-radius: 8px;
+    border: 1px solid #2b3744; background: var(--bg); color: var(--text); font-size: 15px;
+  }
+  .check { display: flex; align-items: center; gap: 8px; color: var(--text); font-size: 15px; }
+  .hint { font-size: 12px; color: var(--muted); margin-top: 4px; }
+  footer { font-size: 12px; color: var(--muted); padding-bottom: 8px; text-align: center; }
+</style>
+</head>
+<body>
+  <h1>Desk AI</h1>
+
+  <div id="orbWrap">
+    <button id="orb" type="button">Tap to start</button>
+  </div>
+  <div id="status">Add your Groq key in Settings, then tap the circle.</div>
+
+  <div id="log" aria-live="polite"><div class="you">Say the wake word, or tap the circle to talk.</div></div>
+
+  <div class="row">
+    <button id="stopBtn" type="button" hidden>Stop</button>
+    <button id="clearBtn" type="button">Clear chat</button>
+  </div>
+
+  <details id="settings" open>
+    <summary>Settings</summary>
+
+    <label for="key">Groq API key (stored only on this phone)</label>
+    <input id="key" type="password" autocomplete="off" placeholder="gsk_...">
+
+    <label for="wake">Wake words (comma separated)</label>
+    <input id="wake" type="text" value="jarvis">
+    <div class="hint">If it mishears you, add what it printed, e.g. "jarvis, service".</div>
+
+    <label for="location">Your location (for weather, optional)</label>
+    <input id="location" type="text" placeholder="City, State">
+
+    <label for="voice">Voice</label>
+    <select id="voice"></select>
+
+    <label class="check"><input id="search" type="checkbox" checked> Web search (slower, but knows current info)</label>
+
+    <label for="model">Model</label>
+    <input id="model" type="text" value="openai/gpt-oss-120b">
+    <div class="hint">If you get a "model not found" error, check console.groq.com/docs/deprecations.</div>
+  </details>
+
+  <footer>Keep this page open and the screen on. Works best in Chrome.</footer>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const store = {
+    get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : v; } catch (e) { return d; } },
+    set(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
+  };
+
+  // ---------- elements & saved settings ----------
+  const orb = $('orb'), statusEl = $('status'), logEl = $('log');
+  const keyEl = $('key'), wakeEl = $('wake'), locEl = $('location'),
+        voiceEl = $('voice'), searchEl = $('search'), modelEl = $('model');
+
+  keyEl.value = store.get('groqKey', '');
+  wakeEl.value = store.get('wake', 'jarvis');
+  locEl.value = store.get('location', '');
+  searchEl.checked = store.get('search', '1') === '1';
+  modelEl.value = store.get('model', 'openai/gpt-oss-120b');
+
+  [[keyEl, 'groqKey'], [wakeEl, 'wake'], [locEl, 'location'], [modelEl, 'model']]
+    .forEach(([el, k]) => el.addEventListener('change', () => store.set(k, el.value.trim())));
+  searchEl.addEventListener('change', () => store.set('search', searchEl.checked ? '1' : '0'));
+  voiceEl.addEventListener('change', () => store.set('voice', voiceEl.value));
+
+  // ---------- state ----------
+  let running = false;     // user tapped start
+  let busy = false;        // thinking or speaking
+  let listening = false;   // recognizer is active
+  let mode = 'wake';       // 'wake' = waiting for wake word, 'question' = next phrase is the question
+  let questionTimer = null;
+  let wakeLock = null;
+  const history = [];
+  const MAX_HISTORY = 10;
+
+  function setState(cls, label, text) {
+    orb.className = cls || '';
+    if (label) orb.textContent = label;
+    if (text !== undefined) statusEl.textContent = text;
+  }
+
+  function showLog(you, ai) {
+    logEl.textContent = '';
+    if (you) { const d = document.createElement('div'); d.className = 'you'; d.textContent = 'You: ' + you; logEl.appendChild(d); }
+    if (ai) { const d = document.createElement('div'); d.textContent = ai; logEl.appendChild(d); }
+  }
+
+  // ---------- voices ----------
+  function loadVoices() {
+    const voices = speechSynthesis.getVoices().filter(v => v.lang && v.lang.toLowerCase().startsWith('en'));
+    if (!voices.length) return;
+    const saved = store.get('voice', '');
+    voiceEl.textContent = '';
+    voices.forEach(v => {
+      const o = document.createElement('option');
+      o.value = v.name; o.textContent = v.name + ' (' + v.lang + ')';
+      if (v.name === saved) o.selected = true;
+      voiceEl.appendChild(o);
+    });
+  }
+  if ('speechSynthesis' in window) {
+    loadVoices();
+    speechSynthesis.onvoiceschanged = loadVoices;
+  }
+
+  function speakChunk(text) {
+    return new Promise((resolve) => {
+      const u = new SpeechSynthesisUtterance(text);
+      const v = speechSynthesis.getVoices().find(x => x.name === voiceEl.value);
+      if (v) { u.voice = v; u.lang = v.lang; } else { u.lang = 'en-US'; }
+      let done = false;
+      const finish = () => { if (!done) { done = true; clearTimeout(guard); resolve(); } };
+      // Android sometimes never fires onend, so add a safety timeout.
+      const guard = setTimeout(finish, Math.max(3000, text.length * 110));
+      u.onend = finish;
+      u.onerror = finish;
+      speechSynthesis.speak(u);
+    });
+  }
+
+  async function speak(text) {
+    const chunks = text.match(/[^.!?]+[.!?]*\s*/g) || [text];
+    for (const c of chunks) {
+      if (!c.trim()) continue;
+      if (!busy) break; // stopped by user
+      await speakChunk(c.trim());
+    }
+  }
+
+  // ---------- speech recognition ----------
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  let rec = null;
+
+  function startListening() {
+    if (!rec || !running || busy || listening) return;
+    try { rec.start(); } catch (e) { /* already started */ }
+  }
+
+  function idleLabel() {
+    return mode === 'question' ? 'Listening…' : 'Tap to talk';
+  }
+
+  if (SR) {
+    rec = new SR();
+    rec.lang = 'en-US';
+    rec.continuous = true;
+    rec.interimResults = false;
+    rec.maxAlternatives = 1;
+
+    rec.onstart = () => {
+      listening = true;
+      if (running && !busy) {
+        if (mode === 'question') setState('listen', 'Listening…', 'Yes? I’m listening…');
+        else setState('', 'Tap to talk', 'Waiting for “' + firstWake() + '”…');
+      }
+    };
+    rec.onend = () => {
+      listening = false;
+      if (running && !busy) setTimeout(startListening, 350);
+    };
+    rec.onerror = (e) => {
+      if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+        running = false;
+        setState('err', 'Mic blocked', 'Allow the microphone for this site in Chrome, then reload.');
+      } else if (e.error === 'network') {
+        setState('err', 'No connection', 'Speech recognition needs internet. Check WiFi.');
+      }
+      // 'no-speech' and 'aborted' are normal; onend will restart.
+    };
+    rec.onresult = (e) => {
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        if (e.results[i].isFinal) handleHeard(e.results[i][0].transcript.trim());
+      }
+    };
+  }
+
+  function wakeWords() {
+    return wakeEl.value.split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+  }
+  function firstWake() { return wakeWords()[0] || 'jarvis'; }
+
+  function findWake(lower) {
+    let best = null;
+    for (const w of wakeWords()) {
+      const idx = lower.indexOf(w);
+      if (idx !== -1 && (best === null || idx < best.idx)) best = { idx, end: idx + w.length };
+    }
+    return best;
+  }
+
+  function enterQuestionMode() {
+    mode = 'question';
+    setState('listen', 'Listening…', 'Yes? I’m listening…');
+    clearTimeout(questionTimer);
+    questionTimer = setTimeout(() => {
+      if (mode === 'question' && !busy) {
+        mode = 'wake';
+        setState('', 'Tap to talk', 'Waiting for “' + firstWake() + '”…');
+      }
+    }, 9000);
+  }
+
+  function handleHeard(text) {
+    if (busy || !text) return;
+    if (mode === 'wake') {
+      const hit = findWake(text.toLowerCase());
+      if (!hit) { statusEl.textContent = 'Heard: ' + text; return; }
+      const rest = text.slice(hit.end).replace(/^[\s,.!?:;-]+/, '');
+      if (rest.split(/\s+/).filter(Boolean).length >= 2) ask(rest);
+      else enterQuestionMode();
+    } else {
+      clearTimeout(questionTimer);
+      ask(text);
+    }
+  }
+
+  // ---------- the brain ----------
+  function systemPrompt() {
+    const now = new Date();
+    let p = 'Today is ' + now.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) +
+      ' and the time is ' + now.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }) + '. ' +
+      'You are a friendly voice assistant living on a desk. Your replies are spoken aloud, so keep them to one or two short sentences, ' +
+      'conversational, and free of markdown, lists, URLs, or emoji. ';
+    const loc = locEl.value.trim();
+    if (loc) p += 'The user is located in ' + loc + '. ';
+    if (searchEl.checked) p += 'Search the web for anything current: news, weather, sports, prices, or recent events. Answer from your own knowledge for everything else.';
+    return p;
+  }
+
+  function cleanForSpeech(t) {
+    return t.replace(/https?:\/\/\S+/g, '').replace(/[*_#`>]/g, '').replace(/\s+/g, ' ').trim();
+  }
+
+  async function callGroq() {
+    const key = keyEl.value.trim();
+    if (!key) throw new Error('Add your Groq API key in Settings first.');
+    const model = modelEl.value.trim() || 'openai/gpt-oss-120b';
+    const body = {
+      model,
+      messages: [{ role: 'system', content: systemPrompt() }, ...history],
+      max_completion_tokens: 2000
+    };
+    if (model.includes('gpt-oss')) body.reasoning_effort = 'low';
+    if (searchEl.checked && model.includes('gpt-oss')) body.tools = [{ type: 'browser_search' }];
+
+    const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + key },
+      body: JSON.stringify(body)
+    });
+    if (!res.ok) {
+      const t = await res.text();
+      throw new Error('Groq error ' + res.status + ': ' + t.slice(0, 220));
+    }
+    const data = await res.json();
+    return ((data.choices && data.choices[0] && data.choices[0].message.content) || '').trim();
+  }
+
+  async function ask(text) {
+    busy = true;
+    mode = 'wake';
+    clearTimeout(questionTimer);
+    try { rec && rec.abort(); } catch (e) {}
+    setState('think', 'Thinking…', 'Thinking…');
+    showLog(text, '');
+
+    history.push({ role: 'user', content: text });
+    while (history.length > MAX_HISTORY) history.shift();
+
+    let reply = '';
+    try {
+      reply = cleanForSpeech(await callGroq());
+      if (!reply) reply = 'Sorry, I didn’t catch that. Could you ask again?';
+      history.push({ role: 'assistant', content: reply });
+      showLog(text, reply);
+      setState('speak', 'Speaking…', 'Speaking…');
+      await speak(reply);
+    } catch (err) {
+      history.pop();
+      setState('err', 'Error', err.message);
+      showLog(text, 'Error: ' + err.message);
+      await new Promise(r => setTimeout(r, 2500));
+    } finally {
+      busy = false;
+      if (running) {
+        setState('', 'Tap to talk', 'Waiting for “' + firstWake() + '”…');
+        setTimeout(startListening, 400);
+      }
+    }
+  }
+
+  // ---------- start / stop / buttons ----------
+  async function lockScreen() {
+    try { if ('wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen'); } catch (e) {}
+  }
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && running) lockScreen();
+  });
+
+  function start() {
+    if (!SR) {
+      setState('err', 'Not supported', 'This browser has no speech recognition. Open the page in Chrome.');
+      return;
+    }
+    if (!keyEl.value.trim()) {
+      $('settings').open = true;
+      setState('err', 'Need key', 'Paste your Groq API key in Settings first.');
+      return;
+    }
+    store.set('groqKey', keyEl.value.trim());
+    running = true;
+    // Unlock speech output (browsers require a tap before speaking).
+    try { speechSynthesis.speak(new SpeechSynthesisUtterance('')); } catch (e) {}
+    lockScreen();
+    $('settings').open = false;
+    $('stopBtn').hidden = false;
+    mode = 'wake';
+    setState('', 'Tap to talk', 'Waiting for “' + firstWake() + '”…');
+    startListening();
+  }
+
+  function stop() {
+    running = false;
+    busy = false;
+    mode = 'wake';
+    clearTimeout(questionTimer);
+    try { rec && rec.abort(); } catch (e) {}
+    try { speechSynthesis.cancel(); } catch (e) {}
+    try { wakeLock && wakeLock.release(); } catch (e) {}
+    $('stopBtn').hidden = true;
+    setState('', 'Tap to start', 'Stopped. Tap the circle to start again.');
+  }
+
+  orb.addEventListener('click', () => {
+    if (!running) { start(); return; }
+    if (busy) {           // tap while it's talking = interrupt
+      try { speechSynthesis.cancel(); } catch (e) {}
+      return;
+    }
+    enterQuestionMode();  // tap to talk, no wake word needed
+    startListening();
+  });
+  $('stopBtn').addEventListener('click', stop);
+  $('clearBtn').addEventListener('click', () => {
+    history.length = 0;
+    showLog('', 'Chat cleared.');
+  });
+})();
+</script>
+</body>
+</html>
